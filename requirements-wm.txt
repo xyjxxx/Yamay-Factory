@@ -1,0 +1,25 @@
+# 豆包视频去水印 — Windows 桌面应用依赖
+# 安装: pip install -r requirements-wm.txt
+
+# GUI 框架
+pyside6>=6.5.0
+
+# 视频处理
+opencv-python>=4.8.0,<5.0.0
+numpy>=1.24.3,<2.0.0
+Pillow>=9.5.0,<10.0.0
+scipy>=1.10.0,<1.14.0
+
+# 水印检测 (OCR)
+easyocr>=1.7.0
+
+# AI 修复 (LaMa - 可选，高质量)
+# LaMa 通过 torch.hub 自动加载，无需额外 pip 包
+torch>=2.0.0
+simple-lama-inpainting>=0.1.1,<0.2.0
+
+# 打包为 Windows .exe (可选)
+pyinstaller>=6.0.0
+
+# 测试 (可选)
+pytest>=7.0.0
