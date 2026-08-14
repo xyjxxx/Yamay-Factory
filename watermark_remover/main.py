@@ -186,6 +186,7 @@ def main():
     _setup_exception_hook()
 
     app = QApplication(sys.argv)
+    _install_qt_translations(app)
     app.setApplicationName("羊咩的工厂")
     app.setOrganizationName("DoubaoNoMark")
 
@@ -205,6 +206,24 @@ def main():
     window.show()
 
     sys.exit(app.exec())
+
+
+def _install_qt_translations(app):
+    """Load Qt's Simplified Chinese translations for standard dialogs."""
+    from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+
+    candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(sys._MEIPASS, "translations"))
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates.append(os.path.join(root, "translations"))
+    candidates.append(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))
+
+    translator = QTranslator(app)
+    for directory in candidates:
+        if translator.load(QLocale(QLocale.Chinese, QLocale.China), "qtbase", "_", directory):
+            app.installTranslator(translator)
+            return
 
 
 def _setup_exception_hook():

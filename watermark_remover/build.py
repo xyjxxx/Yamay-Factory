@@ -1,7 +1,7 @@
 """PyInstaller build script — packages the app as a Windows .exe.
 
 Usage:
-    cd D:/doubao-nomark-main
+    cd D:/Yamay-Factory
     python watermark_remover/build.py
 
 Output will be in ./dist/  directory.
@@ -51,6 +51,7 @@ def build():
     entry = root / "watermark_remover" / "main.py"
     icon = root / "icons" / "sheep.ico"
     background_video = root / "icons" / "sheep1.mp4"
+    qt_translation = root / "translations" / "qtbase_zh_CN.qm"
     lama_models_dir = root / "models"
     easyocr_models_dir = lama_models_dir / "easyocr"
 
@@ -72,6 +73,8 @@ def build():
         f"--add-data={icon}{os.pathsep}icons",
         f"--add-data={background_video}{os.pathsep}icons",
     ]
+    _require(qt_translation.is_file(), "Qt Chinese translation missing; keep translations/qtbase_zh_CN.qm")
+    add_data_args.append(f"--add-data={qt_translation}{os.pathsep}translations")
     lama_checkpoint = lama_models_dir / "hub" / "checkpoints" / "big-lama.pt"
     _require(icon.is_file(), f"icon missing: {icon}")
     _require(background_video.is_file(), f"background video missing: {background_video}")

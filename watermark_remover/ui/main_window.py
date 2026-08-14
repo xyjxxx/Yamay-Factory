@@ -141,6 +141,7 @@ class MainWindow(QMainWindow):
         self._temporal_worker: QThread | None = None
         self._temporal_pending: tuple[str, str | None] | None = None
         self._temporal_table_video: str | None = None
+        self._preview_worker: QThread | None = None
         self._detector = WatermarkDetector(
             use_ocr=self._has_ocr,
             use_morphology=True,
@@ -904,22 +905,45 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "\u63d0\u793a", "\u8bf7\u5148\u9009\u62e9\u6c34\u5370\u533a\u57df\u3002")
             return
 
+        if self._preview_worker is not None and self._preview_worker.isRunning():
+            return
+
         self.progress_panel.set_status("\u6b63\u5728\u9884\u89c8\u4fee\u590d\u6548\u679c\u2026")
         self.settings_panel.preview_btn.setEnabled(False)
 
-        try:
-            inpainter = Inpainter(
-                method=self.settings_panel.inpainting_method,
-                device="cuda" if self._effective_cuda() else "cpu",
-            )
-            result = inpainter.inpaint(self._display_frame, mask)
-            after_pix = ndarray_to_pixmap(result)
-            self.result_panel.set_after(after_pix)
-            self.progress_panel.set_status("修复预览完成 — 拖拽滑块对比效果")
-        except Exception as e:
-            QMessageBox.warning(self, "预览失败", f"{e}")
-        finally:
-            self.settings_panel.preview_btn.setEnabled(True)
+        worker = _PreviewInpaintWorker(
+            self._display_frame,
+            mask,
+            self.settings_panel.inpainting_method,
+            "cuda" if self._effective_cuda() else "cpu",
+            self,
+        )
+        worker.result_ready.connect(self._on_preview_inpaint_ready)
+        worker.load_error.connect(self._on_preview_inpaint_error)
+        self._preview_worker = worker
+        worker.finished.connect(self._on_preview_worker_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_preview_inpaint_ready(self, result):
+        """Show the inpainted frame produced by the background worker."""
+        if self.sender() is not self._preview_worker:
+            return
+        after_pix = ndarray_to_pixmap(result)
+        self.result_panel.set_after(after_pix)
+        self.progress_panel.set_status("修复预览完成 — 拖拽滑块对比效果")
+
+    def _on_preview_inpaint_error(self, message: str):
+        if self.sender() is not self._preview_worker:
+            return
+        QMessageBox.warning(self, "预览失败", f"{message}")
+
+    def _on_preview_worker_finished(self):
+        """Re-enable the preview button once inpainting has stopped."""
+        worker = self.sender()
+        if worker is self._preview_worker:
+            self._preview_worker = None
+        self.settings_panel.preview_btn.setEnabled(True)
 
     # ==================================================================
     # Slots: full processing
@@ -992,7 +1016,7 @@ class MainWindow(QMainWindow):
         self._batch_completed = []
         self._process_next_batch_item()
 
-    def _output_directory(self, input_path: str) -> str:
+    def _get_output_directory(self, input_path: str) -> str:
         """Return one shared output folder, creating it when necessary."""
         selected = self._output_directory
         folder_name = "去水印图片" if is_image_file(input_path) else "去水印视频"
@@ -1001,7 +1025,7 @@ class MainWindow(QMainWindow):
         return os.path.abspath(directory)
 
     def _default_output_path(self, input_path: str) -> str:
-        directory = self._output_directory(input_path)
+        directory = self._get_output_directory(input_path)
         stem, ext = os.path.splitext(os.path.basename(input_path))
         rendered = self._render_name_template(stem, ext)
         if os.path.splitext(rendered)[1].lower() not in {
@@ -1169,11 +1193,12 @@ class MainWindow(QMainWindow):
         worker = _TemporalAnalyzeWorker(input_path, self)
         worker.regions_ready.connect(self._on_temporal_analysis_done)
         worker.load_error.connect(self._on_temporal_analysis_error)
+        worker.finished.connect(self._on_temporal_worker_finished)
+        worker.finished.connect(worker.deleteLater)
         self._temporal_worker = worker
         worker.start()
 
     def _on_temporal_analysis_done(self, regions: list):
-        self._temporal_worker = None
         pending = self._temporal_pending
         self._temporal_pending = None
         if pending is None:
@@ -1204,10 +1229,15 @@ class MainWindow(QMainWindow):
         )
 
     def _on_temporal_analysis_error(self, message: str):
-        self._temporal_worker = None
         self._temporal_pending = None
         self.settings_panel.set_processing_mode(False)
         QMessageBox.warning(self, "\u5206\u6790\u5931\u8d25", f"{message}")
+
+    def _on_temporal_worker_finished(self):
+        """Drop the temporal worker reference once the thread has ended."""
+        worker = self.sender()
+        if worker is self._temporal_worker:
+            self._temporal_worker = None
 
     def _start_pipeline(
         self,
@@ -1452,6 +1482,12 @@ class MainWindow(QMainWindow):
             self.settings_panel.set_processing_mode(False)
             self.progress_panel.set_status("已取消图片处理")
             return
+        if self._preview_worker is not None and self._preview_worker.isRunning():
+            self._preview_worker.wait(5000)
+            self._preview_worker = None
+            self.settings_panel.preview_btn.setEnabled(True)
+            self.progress_panel.set_status("已取消预览")
+            return
         if self._temporal_worker is not None and self._temporal_worker.isRunning():
             self._temporal_worker.cancel()
             self._temporal_worker.wait(3000)
@@ -1575,6 +1611,9 @@ class MainWindow(QMainWindow):
             if self._image_worker is not None and self._image_worker.isRunning():
                 self._image_worker.wait(5000)
             self._image_worker = None
+            if self._preview_worker is not None and self._preview_worker.isRunning():
+                self._preview_worker.wait(5000)
+            self._preview_worker = None
             if self._temporal_worker is not None and self._temporal_worker.isRunning():
                 self._temporal_worker.cancel()
                 self._temporal_worker.wait(3000)
@@ -1693,6 +1732,28 @@ class _SeekWorker(QThread):
         try:
             frame = extract_frame_at(self._path, self._frame_no)
             self.frame_ready.emit(frame)
+        except Exception as e:
+            self.load_error.emit(str(e))
+
+
+class _PreviewInpaintWorker(QThread):
+    """Inpaint the current frame in the background so the UI stays responsive."""
+
+    result_ready = Signal(object)  # np.ndarray
+    load_error = Signal(str)
+
+    def __init__(self, frame, mask, method: str, device: str, parent=None):
+        super().__init__(parent)
+        self._frame = np.array(frame)
+        self._mask = mask
+        self._method = method
+        self._device = device
+
+    def run(self):
+        try:
+            inpainter = Inpainter(method=self._method, device=self._device)
+            result = inpainter.inpaint(self._frame, self._mask)
+            self.result_ready.emit(result)
         except Exception as e:
             self.load_error.emit(str(e))
 
